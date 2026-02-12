@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"os"
+	"path/filepath"
 
 	"app-back-go/api/models"
 	"app-back-go/internal/service"
@@ -49,12 +51,38 @@ func (h *DownloadHandler) HandleDownload(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
+	defer func() {
+		if err := os.Remove(localFilePath); err != nil {
+			log.Printf("Error al eliminar el archivo temporal %s: %v", localFilePath, err)
+		} else {
+			fmt.Printf("Archivo temporal %s eliminado exitosamente.\n", localFilePath)
+		}
+	}()
+
+	file, err := os.Open(localFilePath)
+	if err != nil {
+		log.Printf("Error al abrir el archivo local %s: %v", localFilePath, err)
+		http.Error(w, "Error interno al acceder al video descargado", http.StatusInternalServerError)
+		return
+	}
+	defer file.Close() // Cerrar el archivo después de servirlo
+
+	// Obtener información del archivo para determinar el tamaño y el nombre
+	fileInfo, err := file.Stat()
+	if err != nil {
+		log.Printf("Error al obtener información del archivo %s: %v", localFilePath, err)
+		http.Error(w, "Error interno al obtener información del video", http.StatusInternalServerError)
+		return
+	}
+
 	// Enviar una respuesta de éxito al cliente con la ruta del archivo local
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(map[string]string{
-		"message":         "Video descargado exitosamente a la ubicación local",
-		"original_url":    req.URL,
-		"local_file_path": localFilePath, // Añadimos la ruta del archivo local aquí
-	})
+	w.Header().Set("Content-Type", "video/mp4")
+	downloadFileName := filepath.Base(localFilePath)
+	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=\"%s\"", downloadFileName))
+	w.Header().Set("Content-Length", fmt.Sprintf("%d", fileInfo.Size()))
+
+	fmt.Printf("Sirviendo archivo %s al cliente. Tamaño: %d bytes.\n", downloadFileName, fileInfo.Size())
+
+	// Enviar el archivo al cliente
+	http.ServeContent(w, r, downloadFileName, fileInfo.ModTime(), file)
 }

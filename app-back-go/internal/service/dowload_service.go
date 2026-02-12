@@ -1,6 +1,7 @@
 package service
 
 import (
+	"app-back-go/internal/tools"
 	"bytes"
 	"encoding/json"
 	"errors"
@@ -13,6 +14,7 @@ import (
 
 type DownloadService interface {
 	ProcessVideoDownload(videoURL string) (string, error)
+	GetVideoMetadata(videoURL string) (*VideoMetadata, error)
 }
 
 type dowloaderService struct {
@@ -22,17 +24,29 @@ func NewDownloadService() DownloadService {
 	return &dowloaderService{}
 }
 
-type YtDlResponse struct {
-	URL   string `json:"url"`
-	Ext   string `json:"ext"`   // Extensión del archivo (ej. mp4)
-	Title string `json:"title"` // Título del video
+type YtDlpOutput struct {
+	Ext       string `json:"ext"`       // Extensión del archivo (ej. mp4)
+	Title     string `json:"title"`     // Título del video
+	Thumbnail string `json:"thumbnail"` // URL de la miniatura
+}
+
+type VideoMetadata struct {
+	Title       string `json:"title"`
+	Thumbnail   string `json:"thumbnail"`
+	OriginalURL string `json:"original_url"`
 }
 
 func (s *dowloaderService) ProcessVideoDownload(videoURL string) (string, error) {
 	fmt.Printf("Servicio: Iniciando procesamiento de descarga para URL: %s\n", videoURL)
 
-	if videoURL == "invalid" {
-		return "", errors.New("invalid video URL")
+	if videoURL == "" {
+		return "", errors.New("URL de video no puede estar vacía")
+	}
+
+	// Obtener la ruta de yt-dlp (descargará si no existe)
+	ytdlpPath, err := tools.EnsureYtDlp()
+	if err != nil {
+		return "", fmt.Errorf("error al obtener yt-dlp: %v", err)
 	}
 
 	tempDir := "downloads" // Directorio donde se guardarán los videos
@@ -44,20 +58,20 @@ func (s *dowloaderService) ProcessVideoDownload(videoURL string) (string, error)
 
 	// --- 1. Obtener el título y extensión del video usando yt-dlp (sin descargarlo aún) ---
 	// Esto nos permite crear un nombre de archivo seguro ANTES de la descarga
-	cmdInfo := exec.Command("yt-dlp", "--print-json", "--flat-playlist", "--skip-download", videoURL)
+	cmdInfo := exec.Command(ytdlpPath, "--print-json", "--flat-playlist", "--skip-download", videoURL)
 
 	var stdoutInfo, stderrInfo bytes.Buffer
 	cmdInfo.Stdout = &stdoutInfo
 	cmdInfo.Stderr = &stderrInfo
 
-	err := cmdInfo.Run()
+	err = cmdInfo.Run()
 	if err != nil {
 		logError := fmt.Errorf("error al obtener info con yt-dlp para URL %s: %v\nStderr: %s", videoURL, err, stderrInfo.String())
 		fmt.Printf("ERROR: %s\n", logError)
 		return "", fmt.Errorf("no se pudo obtener información del video. Error: %s", strings.TrimSpace(stderrInfo.String()))
 	}
 
-	var ytDlpInfo YtDlResponse
+	var ytDlpInfo YtDlpOutput
 	err = json.Unmarshal(stdoutInfo.Bytes(), &ytDlpInfo)
 	if err != nil {
 		logError := fmt.Errorf("error al decodificar la salida JSON de yt-dlp info para URL %s: %v\nStdout: %s", videoURL, err, stdoutInfo.String())
@@ -72,7 +86,7 @@ func (s *dowloaderService) ProcessVideoDownload(videoURL string) (string, error)
 		ytDlpInfo.Title = "video_descargado" // Fallback si no se obtiene el título
 	}
 	// Crear un nombre de archivo seguro
-	fileName := fmt.Sprintf("%s.%s", sanitizeFilename(ytDlpInfo.Title), ytDlpInfo.Ext)
+	fileName := fmt.Sprintf("%s.%s", sanitizeFilename(ytDlpInfo.Title), "mp4")
 	filePath := filepath.Join(tempDir, fileName)
 
 	fmt.Printf("Servicio: Título del video: %s, Extensión: %s\n", ytDlpInfo.Title, ytDlpInfo.Ext)
@@ -81,7 +95,14 @@ func (s *dowloaderService) ProcessVideoDownload(videoURL string) (string, error)
 	// --- 2. Descargar el video directamente con yt-dlp a la ruta especificada ---
 	// -o: Especifica el nombre de archivo de salida
 	// --restrict-filenames: Ayuda a evitar caracteres problemáticos en nombres de archivo
-	cmdDownload := exec.Command("yt-dlp", "-o", filePath, "--restrict-filenames", videoURL)
+	cmdDownload := exec.Command(ytdlpPath,
+		"-f", "bv*[ext=mp4][vcodec!=hevc][vcodec!=h265]/bv*[ext=mp4]/b[ext=mp4]/best",
+		"--recode-video", "mp4",
+		"--merge-output-format", "mp4",
+		"-o", filePath,
+		"--restrict-filenames",
+		videoURL,
+	)
 
 	var stdoutDownload, stderrDownload bytes.Buffer
 	cmdDownload.Stdout = &stdoutDownload
@@ -98,6 +119,54 @@ func (s *dowloaderService) ProcessVideoDownload(videoURL string) (string, error)
 
 	fmt.Printf("Servicio: Video descargado exitosamente por yt-dlp a: %s\n", filePath)
 	return filePath, nil // Retornar la ruta del archivo local
+}
+
+// GetVideoMetadata utiliza yt-dlp para extraer solo el título y la URL de la miniatura de un video
+func (s *dowloaderService) GetVideoMetadata(videoURL string) (*VideoMetadata, error) {
+	fmt.Printf("Servicio: Obteniendo metadatos para URL: %s\n", videoURL)
+
+	if videoURL == "" {
+		return nil, errors.New("URL de video no puede estar vacía")
+	}
+
+	// Obtener la ruta de yt-dlp (descargará si no existe)
+	ytdlpPath, err := tools.EnsureYtDlp()
+	if err != nil {
+		return nil, fmt.Errorf("error al obtener yt-dlp: %v", err)
+	}
+
+	// Comando para obtener solo información JSON, sin descargar el video
+	cmd := exec.Command(ytdlpPath, "--print-json", "--flat-playlist", "--skip-download", videoURL)
+
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	cmdErr := cmd.Run()
+	if cmdErr != nil {
+		logError := fmt.Errorf("error al ejecutar yt-dlp para metadatos de URL %s: %v\nStderr: %s", videoURL, cmdErr, stderr.String())
+		fmt.Printf("ERROR: %s\n", logError)
+		return nil, fmt.Errorf("no se pudo obtener metadatos del video. Error: %s", strings.TrimSpace(stderr.String()))
+	}
+
+	var ytDlpInfo YtDlpOutput
+	err = json.Unmarshal(stdout.Bytes(), &ytDlpInfo)
+	if err != nil {
+		logError := fmt.Errorf("error al decodificar la salida JSON de yt-dlp metadatos para URL %s: %v\nStdout: %s", videoURL, err, stdout.String())
+		fmt.Printf("ERROR: %s\n", logError)
+		return nil, errors.New("error al parsear la información de metadatos de yt-dlp")
+	}
+
+	if ytDlpInfo.Title == "" && ytDlpInfo.Thumbnail == "" {
+		return nil, errors.New("yt-dlp no devolvió título ni thumbnail para el video")
+	}
+
+	fmt.Printf("Servicio: Metadatos obtenidos: Título='%s', Thumbnail='%s'\n", ytDlpInfo.Title, ytDlpInfo.Thumbnail)
+	return &VideoMetadata{
+		Title:       ytDlpInfo.Title,
+		Thumbnail:   ytDlpInfo.Thumbnail,
+		OriginalURL: videoURL,
+	}, nil
 }
 
 // sanitizeFilename limpia una cadena para usarla como nombre de archivo seguro
