@@ -22,8 +22,7 @@ func NewDownloadService() DownloadService {
 	return &dowloaderService{}
 }
 
-type YtDlResponse struct {
-	URL   string `json:"url"`
+type YtDlpOutput struct {
 	Ext   string `json:"ext"`   // Extensión del archivo (ej. mp4)
 	Title string `json:"title"` // Título del video
 }
@@ -31,8 +30,8 @@ type YtDlResponse struct {
 func (s *dowloaderService) ProcessVideoDownload(videoURL string) (string, error) {
 	fmt.Printf("Servicio: Iniciando procesamiento de descarga para URL: %s\n", videoURL)
 
-	if videoURL == "invalid" {
-		return "", errors.New("invalid video URL")
+	if videoURL == "" {
+		return "", errors.New("URL de video no puede estar vacía")
 	}
 
 	tempDir := "downloads" // Directorio donde se guardarán los videos
@@ -57,7 +56,7 @@ func (s *dowloaderService) ProcessVideoDownload(videoURL string) (string, error)
 		return "", fmt.Errorf("no se pudo obtener información del video. Error: %s", strings.TrimSpace(stderrInfo.String()))
 	}
 
-	var ytDlpInfo YtDlResponse
+	var ytDlpInfo YtDlpOutput
 	err = json.Unmarshal(stdoutInfo.Bytes(), &ytDlpInfo)
 	if err != nil {
 		logError := fmt.Errorf("error al decodificar la salida JSON de yt-dlp info para URL %s: %v\nStdout: %s", videoURL, err, stdoutInfo.String())
@@ -72,7 +71,7 @@ func (s *dowloaderService) ProcessVideoDownload(videoURL string) (string, error)
 		ytDlpInfo.Title = "video_descargado" // Fallback si no se obtiene el título
 	}
 	// Crear un nombre de archivo seguro
-	fileName := fmt.Sprintf("%s.%s", sanitizeFilename(ytDlpInfo.Title), ytDlpInfo.Ext)
+	fileName := fmt.Sprintf("%s.%s", sanitizeFilename(ytDlpInfo.Title), "mp4")
 	filePath := filepath.Join(tempDir, fileName)
 
 	fmt.Printf("Servicio: Título del video: %s, Extensión: %s\n", ytDlpInfo.Title, ytDlpInfo.Ext)
@@ -81,7 +80,12 @@ func (s *dowloaderService) ProcessVideoDownload(videoURL string) (string, error)
 	// --- 2. Descargar el video directamente con yt-dlp a la ruta especificada ---
 	// -o: Especifica el nombre de archivo de salida
 	// --restrict-filenames: Ayuda a evitar caracteres problemáticos en nombres de archivo
-	cmdDownload := exec.Command("yt-dlp", "-o", filePath, "--restrict-filenames", videoURL)
+	cmdDownload := exec.Command("yt-dlp",
+		"-f", "bv*[ext=mp4][vcodec!=hevc][vcodec!=h265]/bv*[ext=mp4]/b[ext=mp4]/best",
+		"-o", filePath,
+		"--restrict-filenames",
+		videoURL,
+	)
 
 	var stdoutDownload, stderrDownload bytes.Buffer
 	cmdDownload.Stdout = &stdoutDownload
