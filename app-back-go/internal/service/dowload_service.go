@@ -13,6 +13,7 @@ import (
 
 type DownloadService interface {
 	ProcessVideoDownload(videoURL string) (string, error)
+	GetVideoMetadata(videoURL string) (*VideoMetadata, error)
 }
 
 type dowloaderService struct {
@@ -23,8 +24,15 @@ func NewDownloadService() DownloadService {
 }
 
 type YtDlpOutput struct {
-	Ext   string `json:"ext"`   // Extensión del archivo (ej. mp4)
-	Title string `json:"title"` // Título del video
+	Ext       string `json:"ext"`       // Extensión del archivo (ej. mp4)
+	Title     string `json:"title"`     // Título del video
+	Thumbnail string `json:"thumbnail"` // URL de la miniatura
+}
+
+type VideoMetadata struct {
+	Title       string `json:"title"`
+	Thumbnail   string `json:"thumbnail"`
+	OriginalURL string `json:"original_url"`
 }
 
 func (s *dowloaderService) ProcessVideoDownload(videoURL string) (string, error) {
@@ -82,6 +90,8 @@ func (s *dowloaderService) ProcessVideoDownload(videoURL string) (string, error)
 	// --restrict-filenames: Ayuda a evitar caracteres problemáticos en nombres de archivo
 	cmdDownload := exec.Command("yt-dlp",
 		"-f", "bv*[ext=mp4][vcodec!=hevc][vcodec!=h265]/bv*[ext=mp4]/b[ext=mp4]/best",
+		"--recode-video", "mp4",
+		"--merge-output-format", "mp4",
 		"-o", filePath,
 		"--restrict-filenames",
 		videoURL,
@@ -102,6 +112,48 @@ func (s *dowloaderService) ProcessVideoDownload(videoURL string) (string, error)
 
 	fmt.Printf("Servicio: Video descargado exitosamente por yt-dlp a: %s\n", filePath)
 	return filePath, nil // Retornar la ruta del archivo local
+}
+
+// GetVideoMetadata utiliza yt-dlp para extraer solo el título y la URL de la miniatura de un video
+func (s *dowloaderService) GetVideoMetadata(videoURL string) (*VideoMetadata, error) {
+	fmt.Printf("Servicio: Obteniendo metadatos para URL: %s\n", videoURL)
+
+	if videoURL == "" {
+		return nil, errors.New("URL de video no puede estar vacía")
+	}
+
+	// Comando para obtener solo información JSON, sin descargar el video
+	cmd := exec.Command("yt-dlp", "--print-json", "--flat-playlist", "--skip-download", videoURL)
+
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	err := cmd.Run()
+	if err != nil {
+		logError := fmt.Errorf("error al ejecutar yt-dlp para metadatos de URL %s: %v\nStderr: %s", videoURL, err, stderr.String())
+		fmt.Printf("ERROR: %s\n", logError)
+		return nil, fmt.Errorf("no se pudo obtener metadatos del video. Error: %s", strings.TrimSpace(stderr.String()))
+	}
+
+	var ytDlpInfo YtDlpOutput
+	err = json.Unmarshal(stdout.Bytes(), &ytDlpInfo)
+	if err != nil {
+		logError := fmt.Errorf("error al decodificar la salida JSON de yt-dlp metadatos para URL %s: %v\nStdout: %s", videoURL, err, stdout.String())
+		fmt.Printf("ERROR: %s\n", logError)
+		return nil, errors.New("error al parsear la información de metadatos de yt-dlp")
+	}
+
+	if ytDlpInfo.Title == "" && ytDlpInfo.Thumbnail == "" {
+		return nil, errors.New("yt-dlp no devolvió título ni thumbnail para el video")
+	}
+
+	fmt.Printf("Servicio: Metadatos obtenidos: Título='%s', Thumbnail='%s'\n", ytDlpInfo.Title, ytDlpInfo.Thumbnail)
+	return &VideoMetadata{
+		Title:       ytDlpInfo.Title,
+		Thumbnail:   ytDlpInfo.Thumbnail,
+		OriginalURL: videoURL,
+	}, nil
 }
 
 // sanitizeFilename limpia una cadena para usarla como nombre de archivo seguro
