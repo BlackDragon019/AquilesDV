@@ -1,6 +1,7 @@
 package service
 
 import (
+	"app-back-go/internal/tools"
 	"bytes"
 	"encoding/json"
 	"errors"
@@ -42,6 +43,12 @@ func (s *dowloaderService) ProcessVideoDownload(videoURL string) (string, error)
 		return "", errors.New("URL de video no puede estar vacía")
 	}
 
+	// Obtener la ruta de yt-dlp (descargará si no existe)
+	ytdlpPath, err := tools.EnsureYtDlp()
+	if err != nil {
+		return "", fmt.Errorf("error al obtener yt-dlp: %v", err)
+	}
+
 	tempDir := "downloads" // Directorio donde se guardarán los videos
 
 	// Asegurarse de que el directorio de descargas existe
@@ -51,13 +58,13 @@ func (s *dowloaderService) ProcessVideoDownload(videoURL string) (string, error)
 
 	// --- 1. Obtener el título y extensión del video usando yt-dlp (sin descargarlo aún) ---
 	// Esto nos permite crear un nombre de archivo seguro ANTES de la descarga
-	cmdInfo := exec.Command("yt-dlp", "--print-json", "--flat-playlist", "--skip-download", videoURL)
+	cmdInfo := exec.Command(ytdlpPath, "--print-json", "--flat-playlist", "--skip-download", videoURL)
 
 	var stdoutInfo, stderrInfo bytes.Buffer
 	cmdInfo.Stdout = &stdoutInfo
 	cmdInfo.Stderr = &stderrInfo
 
-	err := cmdInfo.Run()
+	err = cmdInfo.Run()
 	if err != nil {
 		logError := fmt.Errorf("error al obtener info con yt-dlp para URL %s: %v\nStderr: %s", videoURL, err, stderrInfo.String())
 		fmt.Printf("ERROR: %s\n", logError)
@@ -88,7 +95,7 @@ func (s *dowloaderService) ProcessVideoDownload(videoURL string) (string, error)
 	// --- 2. Descargar el video directamente con yt-dlp a la ruta especificada ---
 	// -o: Especifica el nombre de archivo de salida
 	// --restrict-filenames: Ayuda a evitar caracteres problemáticos en nombres de archivo
-	cmdDownload := exec.Command("yt-dlp",
+	cmdDownload := exec.Command(ytdlpPath,
 		"-f", "bv*[ext=mp4][vcodec!=hevc][vcodec!=h265]/bv*[ext=mp4]/b[ext=mp4]/best",
 		"--recode-video", "mp4",
 		"--merge-output-format", "mp4",
@@ -122,16 +129,22 @@ func (s *dowloaderService) GetVideoMetadata(videoURL string) (*VideoMetadata, er
 		return nil, errors.New("URL de video no puede estar vacía")
 	}
 
+	// Obtener la ruta de yt-dlp (descargará si no existe)
+	ytdlpPath, err := tools.EnsureYtDlp()
+	if err != nil {
+		return nil, fmt.Errorf("error al obtener yt-dlp: %v", err)
+	}
+
 	// Comando para obtener solo información JSON, sin descargar el video
-	cmd := exec.Command("yt-dlp", "--print-json", "--flat-playlist", "--skip-download", videoURL)
+	cmd := exec.Command(ytdlpPath, "--print-json", "--flat-playlist", "--skip-download", videoURL)
 
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 
-	err := cmd.Run()
-	if err != nil {
-		logError := fmt.Errorf("error al ejecutar yt-dlp para metadatos de URL %s: %v\nStderr: %s", videoURL, err, stderr.String())
+	cmdErr := cmd.Run()
+	if cmdErr != nil {
+		logError := fmt.Errorf("error al ejecutar yt-dlp para metadatos de URL %s: %v\nStderr: %s", videoURL, cmdErr, stderr.String())
 		fmt.Printf("ERROR: %s\n", logError)
 		return nil, fmt.Errorf("no se pudo obtener metadatos del video. Error: %s", strings.TrimSpace(stderr.String()))
 	}
